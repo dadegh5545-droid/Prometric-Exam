@@ -93,12 +93,12 @@ function startTick(){
 }
 function timerTick(){
   if(!ses||ses.done){clearInterval(tick);return;}
-  const el=$("#timer");if(!el)return;
+  const el=$("#timer");
   if(ses.limit){
     const left=ses.limit-(Date.now()-ses.start);
-    el.textContent=fmt(left);el.className="timer mono"+(left<300000?" low":"");
+    if(el){el.textContent=fmt(left);el.className="timer mono"+(left<300000?" low":"");}
     if(left<=0){clearInterval(tick);finishExam();}
-  }else{
+  }else if(el){
     el.textContent=fmt(Date.now()-ses.start);
   }
 }
@@ -133,7 +133,7 @@ const NAV=[
   {k:"guide",ic:"✦",t:"المرشد"}
 ];
 function go(v){
-  if((v==="practice"||v==="exam")&&ses&&ses.mode!==v){if(!ses.done)if(!confirm("لديك جلسة جارية. الخروج منها سينهيها. متابعة؟"))return;endSession();}
+  if((v==="practice"||v==="exam")&&ses&&ses.mode!==v&&!ses.done){if(!confirm("لديك جلسة جارية. الخروج منها سينهيها. متابعة؟"))return;endSession();}
   if(v!=="guide")bkMsg="";
   view=v;window.scrollTo(0,0);render();
 }
@@ -255,7 +255,7 @@ function runner(){
       else if(oi===picked)cls+=" wrong";
     }else if(picked===oi)cls+=" pick";
     return '<button class="'+cls+'" data-pick="'+oi+'"'+(reveal?" disabled":"")+'>'+
-      '<k>'+String.fromCharCode(65+k)+'</k><span>'+esc(q.o[oi])+'</span></button>';
+      '<span class="k">'+String.fromCharCode(65+k)+'</span><span>'+esc(q.o[oi])+'</span></button>';
   }).join("");
   const right=picked===q.a;
   const fb=reveal?'<div class="fb '+(right?"good":"bad")+'">'+
