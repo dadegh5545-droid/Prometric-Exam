@@ -1,0 +1,579 @@
+
+/* ================= APP ================= */
+const SEC={
+  CC:{ar:"الكيمياء السريرية",en:"Clinical Chemistry"},
+  HEM:{ar:"أمراض الدم",en:"Haematology"},
+  BB:{ar:"بنك الدم",en:"Blood Bank"},
+  MIC:{ar:"الأحياء الدقيقة",en:"Microbiology"},
+  PAR:{ar:"الطفيليات",en:"Parasitology"},
+  MYV:{ar:"الفطريات والفيروسات",en:"Mycology & Virology"},
+  IMM:{ar:"المناعة والمصليات",en:"Immunology"},
+  UBF:{ar:"البول وسوائل الجسم",en:"Urinalysis & Fluids"},
+  HIS:{ar:"الأنسجة والخلايا",en:"Histopathology"},
+  MGT:{ar:"الجودة والسلامة",en:"Quality & Safety"}
+};
+const KEYS=Object.keys(SEC);
+const LS="mijhar.mlt.v2";
+const PASS=60;
+const TOTAL=B.length;
+const DAY=86400000;
+const IV=[0,1,3,7,16,35];
+
+let S={st:{},fl:{},ex:[],ses:null,theme:null};
+try{const r=localStorage.getItem(LS);if(r)S=Object.assign(S,JSON.parse(r));}catch(e){}
+try{ // migrate v1 progress if present
+  if(!Object.keys(S.st).length){const o=localStorage.getItem("mijhar.mlt.v1");
+    if(o){const v=JSON.parse(o);S.st=v.st||{};S.fl=v.fl||{};S.ex=v.ex||[];}}
+}catch(e){}
+function save(){try{localStorage.setItem(LS,JSON.stringify(S));}catch(e){}}
+
+/* ---- theme ---- */
+function applyTheme(){
+  if(S.theme)document.documentElement.setAttribute("data-theme",S.theme);
+  else document.documentElement.removeAttribute("data-theme");
+  document.getElementById("themeIco").textContent=S.theme==="dark"?"☾":S.theme==="light"?"☀":"◐";
+}
+document.getElementById("themeBtn").onclick=function(){
+  S.theme=S.theme==="dark"?"light":S.theme==="light"?null:"dark";save();applyTheme();
+};
+applyTheme();
+
+/* ---- helpers ---- */
+const $=function(s){return document.querySelector(s)};
+const esc=function(t){return String(t).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})};
+const byId={};B.forEach(function(q){byId[q.id]=q});
+function rec(id){return S.st[id]||{c:0,w:0,l:null,lv:0,due:0}}
+function secList(s){return B.filter(function(q){return q.s===s})}
+function stats(list){
+  let seen=0,ok=0,att=0,cor=0;
+  list.forEach(function(q){const r=S.st[q.id];if(r){seen++;att+=r.c+r.w;cor+=r.c;if(r.l===1)ok++;}});
+  return {n:list.length,seen:seen,ok:ok,att:att,cor:cor,acc:att?Math.round(cor/att*100):0,cov:Math.round(seen/list.length*100)};
+}
+function allStats(){return stats(B)}
+function wrongIds(){return B.filter(function(q){return rec(q.id).l===0}).map(function(q){return q.id})}
+function flagIds(){return B.filter(function(q){return S.fl[q.id]}).map(function(q){return q.id})}
+function dueIds(){const now=Date.now();return B.filter(function(q){const r=S.st[q.id];return r&&(r.due||0)<=now}).map(function(q){return q.id})}
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));const t=a[i];a[i]=a[j];a[j]=t;}return a}
+function fmt(ms){const t=Math.max(0,Math.floor(ms/1000));const m=Math.floor(t/60),s=t%60;return (m<10?"0":"")+m+":"+(s<10?"0":"")+s}
+function padColor(st){
+  if(!st.seen)return "var(--line2)";
+  const a=st.acc;
+  if(a<50)return "#C24034";
+  if(a<65)return "#D4802A";
+  if(a<80)return "#B8A72E";
+  if(a<90)return "#5D9E3D";
+  return "#1E8A5A";
+}
+/* spaced repetition */
+function grade(id,ok){
+  const r=S.st[id]||{c:0,w:0,l:null,lv:0,due:0};
+  if(ok){r.c++;r.l=1;r.lv=Math.min((r.lv||0)+1,IV.length-1);}
+  else{r.w++;r.l=0;r.lv=0;}
+  r.due=Date.now()+IV[r.lv]*DAY;
+  S.st[id]=r;
+}
+
+/* ---- session ---- */
+let ses=S.ses||null,tick=null;
+
+function startSession(mode,ids,limitMin){
+  if(!ids||!ids.length){alert("لا توجد أسئلة مطابقة لهذا الاختيار.");return;}
+  ses={mode:mode,ids:ids,i:0,ans:{},ord:{},done:false,review:false,start:Date.now(),limit:limitMin?limitMin*60000:0};
+  ids.forEach(function(id){
+    const q=byId[id];const o=q.o.map(function(_,k){return k});
+    ses.ord[id]=shuffle(o);
+  });
+  S.ses=ses;save();
+  startTick();
+  go(mode==="exam"?"exam":"practice");
+}
+function startTick(){
+  if(tick)clearInterval(tick);
+  if(ses&&!ses.done)tick=setInterval(timerTick,1000);
+}
+function timerTick(){
+  if(!ses||ses.done){clearInterval(tick);return;}
+  const el=$("#timer");if(!el)return;
+  if(ses.limit){
+    const left=ses.limit-(Date.now()-ses.start);
+    el.textContent=fmt(left);el.className="timer mono"+(left<300000?" low":"");
+    if(left<=0){clearInterval(tick);finishExam();}
+  }else{
+    el.textContent=fmt(Date.now()-ses.start);
+  }
+}
+function answer(id,pick){
+  if(ses.ans[id]!==undefined)return;
+  ses.ans[id]=pick;
+  if(ses.mode==="practice")grade(id,pick===byId[id].a);
+  save();render();
+}
+function finishExam(){
+  ses.done=true;if(tick)clearInterval(tick);
+  let cor=0;const bySec={};
+  ses.ids.forEach(function(id){
+    const q=byId[id];const p=ses.ans[id];const ok=p===q.a;
+    if(!bySec[q.s])bySec[q.s]={n:0,c:0};
+    bySec[q.s].n++;if(ok){bySec[q.s].c++;cor++;}
+    grade(id,ok);
+  });
+  S.ex.unshift({d:Date.now(),n:ses.ids.length,c:cor,s:bySec,t:Date.now()-ses.start});
+  S.ex=S.ex.slice(0,20);save();render();
+}
+function endSession(){ses=null;S.ses=null;save();if(tick)clearInterval(tick);}
+
+/* ---- routing ---- */
+let view="dash",sub="wrong",bankQ="",bankSec="ALL",bkMsg="";
+const NAV=[
+  {k:"dash",ic:"◍",t:"الرئيسية"},
+  {k:"practice",ic:"✎",t:"تدريب"},
+  {k:"exam",ic:"⏱",t:"امتحان"},
+  {k:"review",ic:"↺",t:"مراجعتي"},
+  {k:"bank",ic:"☰",t:"البنك"},
+  {k:"guide",ic:"✦",t:"المرشد"}
+];
+function go(v){
+  if((v==="practice"||v==="exam")&&ses&&ses.mode!==v){if(!ses.done)if(!confirm("لديك جلسة جارية. الخروج منها سينهيها. متابعة؟"))return;endSession();}
+  if(v!=="guide")bkMsg="";
+  view=v;window.scrollTo(0,0);render();
+}
+
+/* ---- views ---- */
+function vDash(){
+  const a=allStats();const w=wrongIds().length;const d=dueIds().length;
+  const strip=KEYS.map(function(k){
+    const st=stats(secList(k));
+    return '<button class="dip" data-sec="'+k+'"><i style="background:'+padColor(st)+'"></i>'+
+      '<em>'+SEC[k].ar+'</em><s class="mono">'+(st.seen?st.acc+"%":"—")+'</s></button>';
+  }).join("");
+  const advice=nextStep();
+  const resume=ses&&!ses.done?'<div class="card pad row" style="border-color:var(--violet)">'+
+    '<span class="chip v">جلسة غير مكتملة</span>'+
+    '<span class="tiny">'+(ses.mode==="exam"?"امتحان":"تدريب")+' — أنجزتَ '+Object.keys(ses.ans).length+' من '+ses.ids.length+'</span>'+
+    '<button class="btn sm" id="resume">أكمِل</button>'+
+    '<button class="btn ghost sm" id="drop">إلغاء الجلسة</button></div>':"";
+  const hist=S.ex.length?S.ex.slice(0,5).map(function(e){
+    const p=Math.round(e.c/e.n*100);
+    return '<tr><td class="mono">'+new Date(e.d).toLocaleDateString("ar-EG")+'</td><td class="num mono" dir="ltr">'+e.c+"/"+e.n+
+      '</td><td class="num mono">'+p+'%</td><td><span class="chip '+(p>=PASS?"g":"r")+'">'+(p>=PASS?"ناجح":"راسب")+'</span></td></tr>';
+  }).join(""):'<tr><td colspan="4" class="muted tiny">لم تُجرِ امتحانًا بعد.</td></tr>';
+
+  return '<div class="stack">'+resume+
+   '<div class="hero">'+
+     '<div class="card pad stack">'+
+       '<div class="eyebrow">حالتك الآن</div>'+
+       '<div class="row" style="gap:18px">'+
+         '<div class="ring" style="--p:'+a.cov+'"><i class="mono">'+a.cov+'%</i></div>'+
+         '<div><div class="big">'+a.acc+'%</div>'+
+         '<div class="tiny muted">نسبة إجاباتك الصحيحة من '+a.att+' محاولة</div>'+
+         '<div class="row tiny" style="margin-top:10px">'+
+           '<span class="chip v">'+a.seen+' من '+TOTAL+' سؤال</span>'+
+           (d?'<span class="chip y">'+d+' مستحقّة للمراجعة</span>':"")+
+           (w?'<span class="chip r">'+w+' خطأ</span>':'<span class="chip g">لا أخطاء معلّقة</span>')+
+         '</div></div>'+
+       '</div>'+
+       '<div class="sep"></div>'+
+       '<div><div class="eyebrow" style="margin-bottom:6px">المرشد يقترح</div>'+
+       '<p class="tiny">'+advice.txt+'</p>'+
+       '<div class="row" style="margin-top:12px">'+advice.btn+'</div></div>'+
+     '</div>'+
+     '<div class="card pad stack">'+
+       '<div><div class="eyebrow">شريط الإتقان</div>'+
+       '<p class="tiny muted" style="margin-top:4px">كل وسادة قسمٌ من الأقسام العشرة، ولونها يتبع دقّتك فيه. اضغط أيّها لتبدأ جلسة.</p></div>'+
+       '<div class="strip">'+strip+'</div>'+
+     '</div>'+
+   '</div>'+
+   '<div class="kpis">'+
+     '<div class="kpi"><b class="mono">'+TOTAL+'</b><span>سؤال في البنك</span></div>'+
+     '<div class="kpi"><b class="mono">'+a.ok+'</b><span>سؤال متقن</span></div>'+
+     '<div class="kpi"><b class="mono">'+flagIds().length+'</b><span>سؤال معلَّم</span></div>'+
+     '<div class="kpi"><b class="mono">'+S.ex.length+'</b><span>امتحان مكتمل</span></div>'+
+   '</div>'+
+   '<div class="card pad stack">'+
+     '<div class="eyebrow">آخر الامتحانات</div>'+
+     '<div class="scroll"><table class="res"><thead><tr><th>التاريخ</th><th>الدرجة</th><th>النسبة</th><th>النتيجة</th></tr></thead><tbody>'+hist+'</tbody></table></div>'+
+   '</div>'+
+  '</div>';
+}
+
+function nextStep(){
+  const a=allStats();const w=wrongIds().length;const d=dueIds().length;
+  if(a.seen===0)return {txt:"ابدأ بجلسة تدريب قصيرة من عشرين سؤالًا مختلطًا. سأقيس بها مستواك في الأقسام العشرة قبل أن أرسم لك خطة.",btn:'<button class="btn" data-go="practice">ابدأ أول جلسة</button>'};
+  if(d>=20)return {txt:"لديك "+d+" سؤالًا حان موعد مراجعتها. المراجعة في وقتها أرخص كثيرًا من إعادة التعلّم من الصفر.",btn:'<button class="btn" data-drill="due">راجع المستحقّة الآن</button>'};
+  if(w>=15)return {txt:"لديك "+w+" سؤالًا أخطأت فيها. راجعها قبل أن تفتح مادة جديدة؛ تصحيح الخطأ أسرع مكسبٍ للدرجة.",btn:'<button class="btn" data-drill="wrong">راجع أخطائي</button>'};
+  const weak=KEYS.map(function(k){return {k:k,st:stats(secList(k))}})
+    .filter(function(x){return x.st.att>=5}).sort(function(x,y){return x.st.acc-y.st.acc})[0];
+  if(weak&&weak.st.acc<PASS)return {txt:"أضعف أقسامك الآن هو "+SEC[weak.k].ar+" بدقّة "+weak.st.acc+"%. خصّص له جلسة مركّزة من ثلاثين سؤالًا.",btn:'<button class="btn" data-sec-go="'+weak.k+'">تدرّب على '+SEC[weak.k].ar+'</button>'};
+  if(a.cov<40)return {txt:"تغطيتك للبنك "+a.cov+"% فقط. وسّع المدى بجلسات مختلطة قبل التركيز على الامتحانات الكاملة.",btn:'<button class="btn" data-go="practice">جلسة مختلطة</button>'};
+  return {txt:"أداؤك مستقرّ عند "+a.acc+"%. اختبر ثباتك تحت ضغط الوقت بامتحان محاكٍ من مئة سؤال في ساعتين.",btn:'<button class="btn" data-go="exam">امتحان محاكٍ</button>'};
+}
+
+function vPractice(){
+  if(ses&&ses.mode==="practice")return runner();
+  const opts=KEYS.map(function(k){
+    return '<option value="'+k+'">'+SEC[k].ar+" ("+secList(k).length+")</option>";
+  }).join("");
+  return '<div class="qwrap"><div class="card pad stack">'+
+    '<div><h2>جلسة تدريب</h2><p class="tiny muted" style="margin-top:6px">تصحيحٌ فوري بعد كل إجابة مع الشرح. كل إجابة تُحدّث موعد مراجعة السؤال تلقائيًّا.</p></div>'+
+    '<div class="sep"></div>'+
+    '<div class="row"><label class="tiny muted">القسم</label>'+
+      '<select id="pSec"><option value="ALL">كل الأقسام (مختلط)</option>'+opts+'</select>'+
+      '<label class="tiny muted">عدد الأسئلة</label>'+
+      '<select id="pN"><option>10</option><option selected>20</option><option>30</option><option>50</option></select>'+
+    '</div>'+
+    '<div class="row">'+
+      '<label class="sw"><input type="checkbox" id="pNew" checked> فضّل الأسئلة التي لم أرَها</label>'+
+      '<label class="sw"><input type="checkbox" id="pWrong"> من أخطائي السابقة فقط</label>'+
+      '<label class="sw"><input type="checkbox" id="pDue"> المستحقّة للمراجعة اليوم فقط</label>'+
+    '</div>'+
+    '<div><button class="btn" id="pGo">ابدأ الجلسة</button></div>'+
+  '</div></div>';
+}
+
+function vExam(){
+  if(ses&&ses.mode==="exam")return ses.done?(ses.review?runner():examResult()):runner();
+  return '<div class="qwrap"><div class="card pad stack">'+
+    '<div><h2>امتحان محاكٍ</h2><p class="tiny muted" style="margin-top:6px">أسئلة موزّعة على الأقسام العشرة بنسب البنك، بمؤقّت، وبلا تصحيح فوري. النجاح عند '+PASS+'%.</p></div>'+
+    '<div class="sep"></div>'+
+    '<div class="row"><label class="tiny muted">عدد الأسئلة</label>'+
+      '<select id="eN"><option>50</option><option selected>100</option><option>150</option></select>'+
+      '<label class="tiny muted">المدة (دقيقة)</label>'+
+      '<select id="eT"><option>60</option><option selected>120</option><option>180</option></select></div>'+
+    '<div><button class="btn" id="eGo">ابدأ الامتحان</button></div>'+
+    '<p class="tiny muted">لن تظهر الإجابات إلا بعد التسليم، ثم يمكنك المرور على كل سؤال بإجابتك وشرحه. الجلسة تُحفظ فلا تضيع إن أُغلقت الصفحة.</p>'+
+  '</div></div>';
+}
+
+function runner(){
+  const id=ses.ids[ses.i];const q=byId[id];const ord=ses.ord[id];
+  const picked=ses.ans[id];
+  const reveal=(ses.mode==="practice"&&picked!==undefined)||(ses.done&&ses.review);
+  const opts=ord.map(function(oi,k){
+    let cls="opt";
+    if(reveal){
+      if(oi===q.a)cls+=" good";
+      else if(oi===picked)cls+=" wrong";
+    }else if(picked===oi)cls+=" pick";
+    return '<button class="'+cls+'" data-pick="'+oi+'"'+(reveal?" disabled":"")+'>'+
+      '<k>'+String.fromCharCode(65+k)+'</k><span>'+esc(q.o[oi])+'</span></button>';
+  }).join("");
+  const right=picked===q.a;
+  const fb=reveal?'<div class="fb '+(right?"good":"bad")+'">'+
+      '<div class="row" style="margin-bottom:6px"><span class="chip '+(right?"g":"r")+'">'+
+      (right?"إجابة صحيحة":(picked===undefined?"لم تُجب":"إجابة خاطئة"))+'</span>'+
+      (right?"":'<span class="tiny muted">الصواب: '+String.fromCharCode(65+ord.indexOf(q.a))+'</span>')+'</div>'+
+      '<div class="why">'+esc(q.e)+'</div><div class="ar">'+esc(q.ar)+'</div></div>':"";
+  const grid=(ses.mode==="exam")?'<div class="card pad stack"><div class="eyebrow">لوحة الأسئلة</div><div class="nav">'+
+    ses.ids.map(function(x,k){
+      let c="";
+      if(ses.done&&ses.review)c+=ses.ans[x]===byId[x].a?" ok":" no";
+      else if(ses.ans[x]!==undefined)c+=" done";
+      if(S.fl[x])c+=" flag";
+      if(k===ses.i)c+=" cur";
+      return '<button class="'+c.trim()+'" data-jump="'+k+'">'+(k+1)+"</button>";
+    }).join("")+'</div>'+
+    (ses.done?'<div class="row"><button class="btn ghost" id="backRes">عد إلى النتيجة</button></div>':
+    '<div class="row"><button class="btn" id="submit">تسليم الامتحان</button>'+
+    '<span class="tiny muted">أجبت '+Object.keys(ses.ans).length+' من '+ses.ids.length+'</span></div>')+'</div>':"";
+
+  return '<div class="qwrap">'+
+    '<div class="qbar">'+
+      '<span class="chip v">'+SEC[q.s].ar+'</span>'+
+      '<span class="tiny muted mono">'+(ses.i+1)+" من "+ses.ids.length+'</span>'+
+      '<div class="prog"><i style="width:'+((ses.i+1)/ses.ids.length*100)+'%"></i></div>'+
+      '<button class="btn ghost sm" id="flag">'+(S.fl[id]?"★ معلَّم":"☆ علّم")+'</button>'+
+    '</div>'+
+    '<div class="card pad">'+
+      '<div class="stem">'+esc(q.t)+'</div>'+
+      '<div class="opts">'+opts+'</div>'+
+      (fb?'<div style="margin-top:14px">'+fb+'</div>':"")+
+    '</div>'+
+    '<div class="row">'+
+      '<button class="btn ghost sm" id="prev"'+(ses.i===0?" disabled":"")+'>السابق</button>'+
+      '<button class="btn sm" id="next">'+(ses.i===ses.ids.length-1?(ses.mode==="practice"?"إنهاء الجلسة":"آخر سؤال"):"التالي")+'</button>'+
+      '<span class="tiny muted">اختصارات: الأرقام من 1 إلى 4 للاختيار، ومفتاح Enter للتالي، وF للتعليم</span>'+
+    '</div>'+ grid +
+  '</div>';
+}
+
+function examResult(){
+  const last=S.ex[0];const p=Math.round(last.c/last.n*100);
+  const bars=KEYS.filter(function(k){return last.s[k]}).map(function(k){
+    const x=last.s[k];const v=Math.round(x.c/x.n*100);
+    return '<div class="bar"><u>'+SEC[k].ar+'</u><i><b style="width:'+v+'%;background:'+(v>=PASS?"var(--ok)":"var(--bad)")+'"></b></i><s>'+v+'%</s></div>';
+  }).join("");
+  const weak=KEYS.filter(function(k){return last.s[k]&&last.s[k].c/last.s[k].n<PASS/100})
+    .map(function(k){return SEC[k].ar});
+  const missed=ses?ses.ids.filter(function(id){return ses.ans[id]!==byId[id].a}).length:0;
+  return '<div class="qwrap stack">'+
+    '<div class="card pad stack" style="text-align:center">'+
+      '<div class="eyebrow">نتيجة الامتحان</div>'+
+      '<div class="big" style="color:'+(p>=PASS?"var(--ok)":"var(--bad)")+'">'+p+'%</div>'+
+      '<div class="tiny muted">'+last.c+' إجابة صحيحة من '+last.n+' · استغرقت '+fmt(last.t)+'</div>'+
+      '<div><span class="chip '+(p>=PASS?"g":"r")+'">'+(p>=PASS?"اجتزت حدّ النجاح":"دون حدّ النجاح "+PASS+"%")+'</span></div>'+
+    '</div>'+
+    '<div class="card pad stack"><div class="eyebrow">الأداء حسب القسم</div><div class="bars">'+bars+'</div></div>'+
+    '<div class="card pad stack"><div class="eyebrow">مراجعة الامتحان</div>'+
+      '<p class="tiny">مُرّ على أسئلة هذا الامتحان سؤالًا بسؤال: إجابتك، والصواب، والشرح. '+missed+' سؤالًا فاتك.</p>'+
+      '<div class="row"><button class="btn" id="reviewExam">راجع الأسئلة سؤالًا بسؤال</button>'+
+      (missed?'<button class="btn ghost" id="drillMissed">تدرّب على ما فاتني ('+missed+')</button>':"")+'</div>'+
+    '</div>'+
+    '<div class="card pad stack"><div class="eyebrow">قراءة المرشد</div>'+
+      '<p class="tiny">'+(weak.length?"أقسامٌ دون حدّ النجاح: "+weak.join(" · ")+". ابدأ بها في جلسات التدريب، ثم أعد الامتحان بعد يومين.":"لا يوجد قسم دون حدّ النجاح. حافظ على الوتيرة وراجع أخطاءك القليلة.")+'</p>'+
+      '<div class="row"><button class="btn ghost" id="again">امتحان جديد</button></div>'+
+    '</div>'+
+  '</div>';
+}
+
+function vReview(){
+  const sets={wrong:wrongIds(),due:dueIds(),flag:flagIds()};
+  const ids=sets[sub]||[];
+  const head='<div class="row" style="margin-bottom:14px">'+
+    '<button class="btn '+(sub==="wrong"?"":"ghost")+' sm" data-sub="wrong">أخطائي ('+sets.wrong.length+')</button>'+
+    '<button class="btn '+(sub==="due"?"":"ghost")+' sm" data-sub="due">مستحقّة اليوم ('+sets.due.length+')</button>'+
+    '<button class="btn '+(sub==="flag"?"":"ghost")+' sm" data-sub="flag">المعلَّمة ('+sets.flag.length+')</button></div>';
+  const empty={wrong:"لم تُخطئ في أي سؤال بعد — أو صحّحت كل أخطائك.",
+    due:"لا شيء مستحقّ اليوم. المراجعة المتباعدة تعيد السؤال بعد يوم ثم ثلاثة ثم أسبوع كلّما أصبته.",
+    flag:"علّم أي سؤال بالنجمة أثناء التدريب ليظهر هنا."};
+  if(!ids.length)return '<div class="qwrap">'+head+'<div class="card empty"><h3>لا شيء هنا</h3><p class="tiny">'+empty[sub]+'</p></div></div>';
+  const list=ids.slice(0,60).map(function(id){
+    const q=byId[id];const r=rec(id);
+    return '<div class="qrow"><span class="n mono">'+SEC[q.s].en.slice(0,3).toUpperCase()+'</span><div><p>'+esc(q.t)+'</p>'+
+      '<p class="tiny" style="margin-top:6px;color:var(--ok)" dir="ltr">✓ '+esc(q.o[q.a])+'</p>'+
+      '<p class="tiny muted" style="margin-top:2px">'+esc(q.ar)+'</p>'+
+      '<p class="tiny muted" style="margin-top:4px">صحيح '+r.c+' · خطأ '+r.w+' · المستوى '+(r.lv||0)+'/'+(IV.length-1)+'</p></div></div>';
+  }).join("");
+  return '<div class="qwrap">'+head+
+    '<div class="row" style="margin-bottom:12px"><button class="btn" data-drill="'+sub+'">تدرّب على هذه الأسئلة ('+Math.min(ids.length,50)+')</button>'+
+    (sub==="flag"?'<button class="btn ghost sm" id="clearFlags">امسح كل التعليمات</button>':"")+'</div>'+
+    '<div class="card">'+list+'</div>'+
+    (ids.length>60?'<p class="tiny muted" style="margin-top:10px">تُعرض أول 60 من '+ids.length+'.</p>':"")+
+  '</div>';
+}
+
+function vBank(){
+  let list=B;
+  if(bankSec!=="ALL")list=list.filter(function(q){return q.s===bankSec});
+  if(bankQ.trim()){
+    const t=bankQ.toLowerCase();
+    list=list.filter(function(q){return q.t.toLowerCase().indexOf(t)>=0||q.e.toLowerCase().indexOf(t)>=0||q.o.join(" ").toLowerCase().indexOf(t)>=0||q.ar.indexOf(bankQ.trim())>=0});
+  }
+  const rows=list.slice(0,80).map(function(q){
+    return '<div class="qrow"><span class="n mono">'+q.id+'</span><div><p>'+esc(q.t)+'</p>'+
+      '<p class="tiny" style="margin-top:6px;color:var(--ok)" dir="ltr">✓ '+esc(q.o[q.a])+'</p>'+
+      '<p class="tiny muted" style="margin-top:3px" dir="ltr">'+esc(q.e)+'</p>'+
+      '<p class="tiny muted">'+esc(q.ar)+'</p></div></div>';
+  }).join("");
+  const opts=KEYS.map(function(k){return '<option value="'+k+'"'+(bankSec===k?" selected":"")+'>'+SEC[k].ar+'</option>'}).join("");
+  return '<div class="stack">'+
+    '<div class="row"><input type="search" id="bq" placeholder="ابحث بالعربية أو الإنجليزية في السؤال أو الشرح…" value="'+esc(bankQ)+'" style="flex:1;min-width:200px">'+
+    '<select id="bs"><option value="ALL">كل الأقسام</option>'+opts+'</select></div>'+
+    '<p class="tiny muted">'+list.length+' سؤالًا مطابقًا'+(list.length>80?" · تُعرض أول 80":"")+'</p>'+
+    '<div class="card">'+(rows||'<div class="empty"><h3>لا نتائج</h3><p class="tiny">جرّب كلمة أخرى، أو ابحث بالإنجليزية في نصّ السؤال.</p></div>')+'</div>'+
+  '</div>';
+}
+
+function vGuide(){
+  const a=allStats();
+  const ranked=KEYS.map(function(k){return {k:k,st:stats(secList(k))}}).sort(function(x,y){
+    if(x.st.att<5&&y.st.att>=5)return -1;
+    if(y.st.att<5&&x.st.att>=5)return 1;
+    return x.st.acc-y.st.acc;
+  });
+  const weak=ranked.slice(0,3).map(function(x){return SEC[x.k].ar}).join(" · ");
+  const ready=a.att<100?"لم تُجب بعدُ عددًا كافيًا لتقدير جاهزيتك؛ أكمل مئة سؤال على الأقل.":
+    a.acc>=75?"جاهزيتك عالية. حافظ على امتحانٍ محاكٍ كل ثلاثة أيام حتى الموعد.":
+    a.acc>=PASS?"أنت فوق حدّ النجاح بهامشٍ ضيّق. الهامش الآمن يبدأ من 75%.":
+    "أنت دون حدّ النجاح. ركّز على الفهم لا الحفظ، وراجع أخطاءك يوميًّا.";
+  const bars=ranked.map(function(x){
+    const v=x.st.att?x.st.acc:0;
+    return '<div class="bar"><u>'+SEC[x.k].ar+'</u><i><b style="width:'+v+'%;background:'+(x.st.att?padColor(x.st):"var(--line2)")+'"></b></i><s>'+(x.st.att?v+"%":"—")+'</s></div>';
+  }).join("");
+  return '<div class="stack">'+
+    '<div class="card pad stack">'+
+      '<div class="eyebrow">تقدير الجاهزية</div>'+
+      '<p>'+ready+'</p>'+
+      '<p class="tiny muted">أضعف ثلاثة أقسام لديك الآن: '+weak+'</p>'+
+    '</div>'+
+    '<div class="card pad stack"><div class="eyebrow">ترتيب الأقسام بحسب دقّتك</div><div class="bars">'+bars+'</div></div>'+
+    '<div class="card pad stack"><div class="eyebrow">خطة أربعة أسابيع</div><div class="plan">'+
+      '<div class="wk"><b>الأسبوع 1</b><div><strong>التأسيس.</strong> الكيمياء السريرية وأمراض الدم — أكبر قسمين في الامتحان. أربعون سؤالًا يوميًّا في وضع التدريب، مع قراءة الشرح حتى لو أصبت.</div></div>'+
+      '<div class="wk"><b>الأسبوع 2</b><div><strong>ما يُسقِط المتقدّمين.</strong> بنك الدم والأحياء الدقيقة. احفظ ترتيب السحب وشروط الحفظ وتفاعلات النقل والمفاتيح الكيميائية الحيوية للجراثيم.</div></div>'+
+      '<div class="wk"><b>الأسبوع 3</b><div><strong>الأقسام الأصغر.</strong> المناعة والبول والطفيليات والفطريات والأنسجة والجودة. هذه أسرع الأقسام كسبًا لأن أسئلتها نمطية.</div></div>'+
+      '<div class="wk"><b>الأسبوع 4</b><div><strong>المحاكاة.</strong> امتحان كامل كل يومين مع مراجعة الأخطاء في اليوم التالي. أوقِف تعلّم الجديد قبل الامتحان بيومين.</div></div>'+
+    '</div></div>'+
+    '<div class="card pad stack"><div class="eyebrow">قواعد المرشد</div><ul class="tips tiny">'+
+      '<li>الخطأ الذي لم تُراجعه سيتكرّر. ابدأ كل جلسة بقائمة «المستحقّة اليوم».</li>'+
+      '<li>احفظ القيم المرجعية الطبيعية بأرقامها؛ ثلث الأسئلة يحتاجها ضمنيًّا.</li>'+
+      '<li>عند السؤال الحسابي، اكتب المعادلة قبل الأرقام — أغلب الأخطاء في المعادلة لا في الحساب.</li>'+
+      '<li>الكلمات المفتاحية في المتن (MOST specific، FIRST action، EXCEPT) تحسم الخيار؛ اقرأها مرّتين.</li>'+
+      '<li>لا تغيّر إجابتك إلا إذا وجدت سببًا صريحًا؛ التغيير الحدسي يخسر أكثر ممّا يكسب.</li>'+
+      '<li>أسئلة السلامة وضبط الجودة أسهل نقاط الامتحان — لا تدخل الامتحان دون إتقانها.</li>'+
+    '</ul></div>'+
+    '<div class="card pad stack"><div class="eyebrow">نسخة احتياطية من تقدّمك</div>'+
+      '<p class="tiny muted">يُحفظ تقدّمك في هذا المتصفّح وحده؛ مسحُ بياناته يمحوه. انسخ النصّ التالي واحفظه، أو الصق نسخةً سابقة لاستعادتها على جهاز آخر.</p>'+
+      '<textarea id="backup" class="mono" rows="3" spellcheck="false"></textarea>'+
+      '<div class="row"><button class="btn sm" id="copyBk">انسخ النسخة</button>'+
+      '<button class="btn ghost sm" id="loadBk">استعد من النصّ</button>'+
+      '<span class="tiny muted" id="bkMsg">'+esc(bkMsg)+'</span></div>'+
+    '</div>'+
+    '<div class="card pad stack"><div class="eyebrow">تصفير</div>'+
+      '<div><button class="btn ghost sm" id="reset">تصفير كل التقدّم</button></div>'+
+    '</div>'+
+  '</div>';
+}
+
+/* ---- render ---- */
+function render(){
+  const d=dueIds().length;
+  $("#rail").innerHTML=NAV.map(function(n){
+    let b="";
+    if(n.k==="review"){const c=wrongIds().length+d;if(c)b='<span class="badge">'+c+'</span>';}
+    if(n.k==="bank")b='<span class="badge">'+TOTAL+'</span>';
+    return '<button class="'+(view===n.k?"on":"")+'" data-nav="'+n.k+'"><span class="ico">'+n.ic+'</span><span>'+n.t+'</span>'+b+'</button>';
+  }).join("");
+  const slot=$("#topslot");
+  if(ses&&!ses.done)
+    slot.innerHTML='<span class="timer mono'+(ses.limit?"":" plain")+'" id="timer">'+
+      fmt(ses.limit?ses.limit-(Date.now()-ses.start):Date.now()-ses.start)+'</span>';
+  else slot.innerHTML="";
+
+  const v=$("#view");
+  if(view==="dash")v.innerHTML=vDash();
+  else if(view==="practice")v.innerHTML=vPractice();
+  else if(view==="exam")v.innerHTML=vExam();
+  else if(view==="review")v.innerHTML=vReview();
+  else if(view==="bank")v.innerHTML=vBank();
+  else v.innerHTML=vGuide();
+  bind();
+}
+
+function pick(sec,n,onlyNew,onlyWrong,onlyDue){
+  let pool=sec==="ALL"?B.slice():secList(sec);
+  if(onlyWrong)pool=pool.filter(function(q){return rec(q.id).l===0});
+  if(onlyDue){const now=Date.now();pool=pool.filter(function(q){const r=S.st[q.id];return r&&(r.due||0)<=now});}
+  if(!pool.length)return [];
+  if(onlyNew&&!onlyWrong&&!onlyDue){
+    const fresh=pool.filter(function(q){return !S.st[q.id]});
+    if(fresh.length>=n)pool=shuffle(fresh);
+    else pool=shuffle(fresh).concat(shuffle(pool.filter(function(q){return S.st[q.id]})));
+  }else pool=shuffle(pool);
+  return pool.slice(0,Math.min(n,pool.length)).map(function(q){return q.id});
+}
+function examSet(n){
+  const ids=[];
+  KEYS.forEach(function(k){
+    const share=Math.round(secList(k).length/TOTAL*n);
+    ids.push.apply(ids,shuffle(secList(k)).slice(0,share).map(function(q){return q.id}));
+  });
+  while(ids.length<n){const q=B[Math.floor(Math.random()*B.length)];if(ids.indexOf(q.id)<0)ids.push(q.id);}
+  return shuffle(ids).slice(0,n);
+}
+function drill(kind){
+  const sets={wrong:wrongIds,due:dueIds,flag:flagIds,missed:function(){return ses?ses.ids.filter(function(id){return ses.ans[id]!==byId[id].a}):[]}};
+  const ids=shuffle((sets[kind]||sets.wrong)()).slice(0,50);
+  startSession("practice",ids);
+}
+
+function bind(){
+  document.querySelectorAll("[data-nav]").forEach(function(b){b.onclick=function(){go(b.dataset.nav)}});
+  document.querySelectorAll("[data-go]").forEach(function(b){b.onclick=function(){go(b.dataset.go)}});
+  document.querySelectorAll("[data-drill]").forEach(function(b){b.onclick=function(){drill(b.dataset.drill)}});
+  document.querySelectorAll("[data-sec-go]").forEach(function(b){b.onclick=function(){
+    startSession("practice",pick(b.dataset.secGo,30,true,false,false));}});
+  document.querySelectorAll(".dip").forEach(function(p){p.onclick=function(){
+    startSession("practice",pick(p.dataset.sec,20,true,false,false));}});
+  document.querySelectorAll("[data-sub]").forEach(function(b){b.onclick=function(){sub=b.dataset.sub;render()}});
+
+  const rz=$("#resume");if(rz)rz.onclick=function(){startTick();go(ses.mode)};
+  const dp=$("#drop");if(dp)dp.onclick=function(){if(confirm("إلغاء الجلسة غير المكتملة؟")){endSession();render();}};
+
+  const pGo=$("#pGo");
+  if(pGo)pGo.onclick=function(){
+    startSession("practice",pick($("#pSec").value,parseInt($("#pN").value,10),$("#pNew").checked,$("#pWrong").checked,$("#pDue").checked));
+  };
+  const eGo=$("#eGo");
+  if(eGo)eGo.onclick=function(){
+    startSession("exam",examSet(parseInt($("#eN").value,10)),parseInt($("#eT").value,10));
+  };
+  const again=$("#again");if(again)again.onclick=function(){endSession();go("exam")};
+  const rv=$("#reviewExam");if(rv)rv.onclick=function(){ses.review=true;ses.i=0;save();render()};
+  const br=$("#backRes");if(br)br.onclick=function(){ses.review=false;save();render()};
+  const dm=$("#drillMissed");if(dm)dm.onclick=function(){drill("missed")};
+  const cf=$("#clearFlags");if(cf)cf.onclick=function(){S.fl={};save();render()};
+  const rs=$("#reset");
+  if(rs)rs.onclick=function(){
+    if(confirm("سيُمسح كل تقدّمك ونتائج امتحاناتك. متأكّد؟")){S={st:{},fl:{},ex:[],ses:null,theme:S.theme};ses=null;save();go("dash");}
+  };
+  const bk=$("#backup");
+  if(bk){
+    bk.value=JSON.stringify({st:S.st,fl:S.fl,ex:S.ex});
+    $("#copyBk").onclick=function(){
+      bk.select();
+      let done=false;
+      try{done=document.execCommand("copy")}catch(e){}
+      if(!done&&navigator.clipboard)navigator.clipboard.writeText(bk.value).then(function(){$("#bkMsg").textContent="نُسخت."});
+      else $("#bkMsg").textContent=done?"نُسخت.":"حدّد النصّ وانسخه يدويًّا.";
+      bkMsg="";
+    };
+    $("#loadBk").onclick=function(){
+      try{
+        const v=JSON.parse(bk.value);
+        if(!v||typeof v!=="object"||!v.st)throw new Error("bad");
+        S.st=v.st||{};S.fl=v.fl||{};S.ex=v.ex||[];save();
+        bkMsg="استُعيد التقدّم ("+Object.keys(S.st).length+" سؤالًا).";render();
+      }catch(e){bkMsg="النصّ غير صالح. الصق النسخة كاملةً كما نُسخت.";render();}
+    };
+  }
+  const bq=$("#bq");
+  if(bq)bq.oninput=function(){bankQ=bq.value;const p=bq.selectionStart;render();const n=$("#bq");if(n){n.focus();n.setSelectionRange(p,p);}};
+  const bs=$("#bs");if(bs)bs.onchange=function(){bankSec=bs.value;render()};
+
+  if(ses&&(!ses.done||ses.review)){
+    const id=ses.ids[ses.i];
+    document.querySelectorAll("[data-pick]").forEach(function(b){
+      b.onclick=function(){if(!ses.done)answer(id,parseInt(b.dataset.pick,10))};
+    });
+    const f=$("#flag");
+    if(f)f.onclick=function(){if(S.fl[id])delete S.fl[id];else S.fl[id]=1;save();render()};
+    const pv=$("#prev");if(pv)pv.onclick=function(){if(ses.i>0){ses.i--;save();render()}};
+    const nx=$("#next");
+    if(nx)nx.onclick=function(){
+      if(ses.i<ses.ids.length-1){ses.i++;save();render()}
+      else if(ses.mode==="practice"){endSession();go("dash")}
+    };
+    document.querySelectorAll("[data-jump]").forEach(function(b){
+      b.onclick=function(){ses.i=parseInt(b.dataset.jump,10);save();render()};
+    });
+    const sb=$("#submit");
+    if(sb)sb.onclick=function(){
+      const left=ses.ids.length-Object.keys(ses.ans).length;
+      if(left&&!confirm("بقي "+left+" سؤالًا بلا إجابة وسيُحتسب خطأً. تسليم؟"))return;
+      finishExam();
+    };
+  }
+}
+
+document.addEventListener("keydown",function(e){
+  if(!ses||(ses.done&&!ses.review))return;
+  if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT"||e.target.tagName==="TEXTAREA")return;
+  const id=ses.ids[ses.i];const ord=ses.ord[id];
+  if(e.key>="1"&&e.key<="4"){
+    const k=parseInt(e.key,10)-1;
+    if(!ses.done&&ord[k]!==undefined&&ses.ans[id]===undefined){answer(id,ord[k]);e.preventDefault();}
+  }else if(e.key==="Enter"){
+    if(ses.i<ses.ids.length-1){ses.i++;save();render();}
+    else if(ses.mode==="practice"&&!ses.done){endSession();go("dash");}
+    e.preventDefault();
+  }else if(e.key==="ArrowRight"){if(ses.i>0){ses.i--;save();render()}}
+  else if(e.key==="ArrowLeft"){if(ses.i<ses.ids.length-1){ses.i++;save();render()}}
+  else if(e.key.toLowerCase()==="f"){if(S.fl[id])delete S.fl[id];else S.fl[id]=1;save();render();}
+});
+
+/* restore an interrupted session */
+if(ses&&!ses.done){
+  if(ses.limit&&Date.now()-ses.start>=ses.limit)finishExam();
+  else startTick();
+}
+render();
+</script>

@@ -42,3 +42,7 @@ next-env.d.ts
 .amplify
 amplify_outputs*
 amplifyconfiguration*
+# local test artefacts
+_qa*.mjs
+test.html
+*.log
