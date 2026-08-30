@@ -1,0 +1,14 @@
+# AWS Amplify Hosting — تطبيق ساكن بلا خطوة بناء خارجية
+# يُعاد توليد index.html من مصادر src/ في كل نشر
+version: 1
+frontend:
+  phases:
+    build:
+      commands:
+        - sh build.sh
+  artifacts:
+    baseDirectory: /
+    files:
+      - index.html
+  cache:
+    paths: []
